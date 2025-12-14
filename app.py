@@ -104,7 +104,11 @@ def main():
             with st.spinner("正在處理錄音檔... (上傳 -> 分析 -> 生成報告)"):
                 try:
                     # 1. Save uploaded file to temp
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+                    file_ext = os.path.splitext(uploaded_file.name)[1]
+                    if not file_ext:
+                        file_ext = ".mp3" # Default fallback
+                        
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
                         tmp_file.write(uploaded_file.getvalue())
                         tmp_file_path = tmp_file.name
 
@@ -123,32 +127,119 @@ def main():
 
                     # 4. Generate Content
                     st.text("正在進行 AI 分析...")
-                    model = genai.GenerativeModel("gemini-2.0-flash")
-                    response = model.generate_content([myfile, SYSTEM_PROMPT])
+                    
+                    # Candidate models in user-preferred order
+                    # Note: 2.0-flash-exp added as invisible safety net if user's exact names fail
+                    CANDIDATE_MODELS = [
+                        'gemini-2.5-flash',
+                        'gemini-2.0-flash',
+                        'gemini-flash-latest',
+                        'gemini-2.0-flash-exp' # Fallback for safety
+                    ]
+                    
+                    # Configure safety settings to avoid PROHIBITED_CONTENT blocks on harmless data
+                    safety_settings = [
+                        {
+                            "category": "HARM_CATEGORY_HARASSMENT",
+                            "threshold": "BLOCK_NONE"
+                        },
+                        {
+                            "category": "HARM_CATEGORY_HATE_SPEECH",
+                            "threshold": "BLOCK_NONE"
+                        },
+                        {
+                            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                            "threshold": "BLOCK_NONE"
+                        },
+                        {
+                            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                            "threshold": "BLOCK_NONE"
+                        },
+                    ]
+                    
+                    response = None
+                    
+                    for model_name in CANDIDATE_MODELS:
+                        st.text(f"正在嘗試模型：{model_name}...")
+                        model = genai.GenerativeModel(model_name)
+                        
+                        retry_count = 0
+                        max_retries = 3
+                        success = False
+                        
+                        while retry_count < max_retries:
+                            try:
+                                # Add safety_settings
+                                response = model.generate_content(
+                                    [myfile, SYSTEM_PROMPT],
+                                    safety_settings=safety_settings
+                                )
+                                
+                                # Validate response has content immediately
+                                if not response.parts:
+                                     raise ValueError(f"AI 回傳內容為空 (可能被安全機制阻擋)，原因: {response.prompt_feedback}")
+                                     
+                                # Try accessing text to ensure it's valid
+                                _ = response.text 
+                                
+                                success = True
+                                break # Success inner loop
+                            except Exception as e:
+                                err_str = str(e)
+                                if "429" in err_str or "Quota exceeded" in err_str:
+                                    retry_count += 1
+                                    wait_time = 2 ** retry_count + 3
+                                    st.warning(f"模型 {model_name} 用量達上限 (429)，{wait_time}秒後重試 ({retry_count}/{max_retries})...")
+                                    time.sleep(wait_time)
+                                elif "404" in err_str or "not found" in err_str.lower():
+                                    st.warning(f"模型 {model_name} 未找到或無權限，嘗試下一個...")
+                                    break # Break inner retry loop, go to next model
+                                else:
+                                    st.error(f"模型 {model_name} 發生錯誤: {err_str}")
+                                    # If it's a safety block (ValueError we raised or API error), maybe try next model?
+                                    break # Break inner loop, try next model
+                        
+                        if success:
+                            st.success(f"成功使用模型：{model_name}")
+                            break # Break outer model loop
+                    
+                    if response is None or not success:
+                        st.error("錯誤：所有模型嘗試皆失敗，請稍後再試或檢查 API Key 權限與檔案內容。")
+                        return
                     
                     # 5. Display Results
                     result_text = response.text
                     
                     # Display Results (Sequential)
-                    # Simple heuristic split (can be improved)
                     part1_marker = "【寶寶照顧日誌：逐字稿】"
                     part2_marker = "【寶寶照顧日誌：會議記錄整理】"
                     
                     content_transcript = ""
                     content_minutes = ""
 
+                    # Improved splitting logic
                     if part1_marker in result_text and part2_marker in result_text:
-                        parts = result_text.split(part2_marker)
-                        if len(parts) > 1:
-                            # Part 1 is usually first based on prompt order
-                            if result_text.index(part1_marker) < result_text.index(part2_marker):
-                                content_transcript = parts[0]
-                                content_minutes = part2_marker + parts[1]
-                            else:
-                                content_minutes = parts[0]
-                                content_transcript = part1_marker + parts[1]
+                        p1_index = result_text.find(part1_marker)
+                        p2_index = result_text.find(part2_marker)
+                        
+                        if p1_index < p2_index:
+                            # Part 1 then Part 2
+                            # Part 1 content is from p1 until p2 (excluding p2 header)
+                            content_transcript = result_text[p1_index:p2_index].strip()
+                            # Part 2 content is from p2 to end
+                            content_minutes = result_text[p2_index:].strip()
+                        else:
+                            # Part 2 then Part 1
+                            content_minutes = result_text[p2_index:p1_index].strip()
+                            content_transcript = result_text[p1_index:].strip()
+                    elif part1_marker in result_text:
+                         content_transcript = result_text
+                         content_minutes = "⚠️ 未能生成會議記錄部分"
+                    elif part2_marker in result_text:
+                         content_minutes = result_text
+                         content_transcript = "⚠️ 未能生成逐字稿部分"
                     else:
-                        # Fallback if markers are missing or different
+                        # Fallback
                         content_minutes = result_text
                         content_transcript = result_text
 
