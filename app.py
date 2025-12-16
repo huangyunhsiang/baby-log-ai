@@ -11,25 +11,38 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- 黃金標準：雙重保險讀取法 ---
+def get_api_key():
+    # 1. 第一順位：優先檢查 Streamlit Cloud 的 Secrets (雲端部署用)
+    #    或是你專案資料夾裡 .streamlit/secrets.toml 有沒有寫
+    if "GOOGLE_API_KEY" in st.secrets:
+        return st.secrets["GOOGLE_API_KEY"]
+    
+    # 2. 第二順位：如果上面沒有，就檢查電腦的環境變數 (本機開發用)
+    #    這樣你就不用每個專案都貼 secrets.toml 了！
+    env_key = os.getenv("GOOGLE_API_KEY")
+    if env_key:
+        return env_key
+        
+    return None
+
 # --- API Configuration ---
 def configure_api():
     try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
+        api_key = get_api_key()
+
+        if not api_key:
+            st.error("🚨 找不到 API Key！請檢查 secrets.toml 或 系統環境變數。")
+            st.info("請確認是否已設定 `GOOGLE_API_KEY`。")
+            return False
+
         if api_key == "YOUR_API_KEY_HERE":
             st.error("⚠️ 請設定您的 Google API Key")
             st.info("請開啟專案資料夾中的 `.streamlit/secrets.toml` 檔案，並將 `YOUR_API_KEY_HERE` 替換為您真實的 API Key。")
-            st.code('GOOGLE_API_KEY = "您的_API_KEY"', language="toml")
             return False
+            
         genai.configure(api_key=api_key)
         return True
-    except FileNotFoundError:
-        st.error("⚠️ 未找到設定檔")
-        st.info("請確認 `.streamlit/secrets.toml` 檔案是否存在。")
-        return False
-    except KeyError:
-        st.error("⚠️ 設定檔缺少金鑰")
-        st.info("請在 `.streamlit/secrets.toml` 中設定 `GOOGLE_API_KEY`。")
-        return False
     except Exception as e:
         st.error(f"API 設定錯誤: {str(e)}")
         return False
