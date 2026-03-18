@@ -117,17 +117,26 @@ def main():
             with st.spinner("正在處理錄音檔... (上傳 -> 分析 -> 生成報告)"):
                 try:
                     # 1. Save uploaded file to temp
-                    file_ext = os.path.splitext(uploaded_file.name)[1]
+                    file_ext = os.path.splitext(uploaded_file.name)[1].lower()
                     if not file_ext:
                         file_ext = ".mp3" # Default fallback
                         
+                    mime_types = {
+                        ".mp3": "audio/mp3",
+                        ".wav": "audio/wav",
+                        ".m4a": "audio/mp4",
+                        ".ogg": "audio/ogg",
+                        ".aac": "audio/aac",
+                    }
+                    mime_type = mime_types.get(file_ext, "audio/mp3")
+
                     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
                         tmp_file.write(uploaded_file.getvalue())
                         tmp_file_path = tmp_file.name
 
                     # 2. Upload to Gemini
                     st.text("正在上傳至 Gemini...")
-                    myfile = genai.upload_file(tmp_file_path)
+                    myfile = genai.upload_file(tmp_file_path, mime_type=mime_type)
                     
                     # 3. Wait for processing
                     while myfile.state.name == "PROCESSING":
